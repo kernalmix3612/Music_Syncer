@@ -384,7 +384,7 @@ class AdbFS(FS):
     def copy_to(self, src_abspath: str, dst_fs: "FS", dst_abspath: str) -> None:
         self._ensure_device()
         if isinstance(dst_fs, LocalFS):
-            ensure_dir_local(os.path.dirname(dst_abspath))
+            ensure_dir_local(dst_abspath)
             subprocess.run(["adb"] + (["-s", self.serial] if self.serial else []) + ["pull", src_abspath, dst_abspath], check=True)
         elif isinstance(dst_fs, AdbFS):
             dst_fs.ensure_remote_dir(os.path.dirname(dst_abspath))

@@ -46,6 +46,9 @@ LANG_STRINGS = {
         'missing': 'Please provide both Source and Target endpoints.',
         'busy': 'A sync is already running.',
         'engine_missing': "Can't find {} in {}",
+        'tab_android': 'Android',
+        'tab_local': 'Local',
+        'browse': 'Browse…',
     },
     'zh': {
         'title': '音樂同步 — 同步來源 → 被同步目標',
@@ -74,6 +77,9 @@ LANG_STRINGS = {
         'missing': '請填入來源與目標端點',
         'busy': '目前已有同步在執行',
         'engine_missing': '{} 無法在 {} 找到',
+        'tab_android': 'Android 裝置',
+        'tab_local': '本機/外接磁碟',
+        'browse': '瀏覽…',
     }
 }
 
@@ -113,34 +119,73 @@ def list_storages(serial: str) -> List[Tuple[str,str]]:
             seen.add(tail); out_list.append((lbl, tail))
     return out_list
 
-class ADBPicker(QtWidgets.QGroupBox):
+
+# ---- Endpoint Picker (Android/Local tabs) ----
+class EndpointPicker(QtWidgets.QGroupBox):
     def __init__(self, title: str, parent=None):
         super().__init__(title, parent)
+
+        self.tabs = QtWidgets.QTabWidget()
+        # --- Android tab ---
+        self.pageAndroid = QtWidgets.QWidget()
+        gridA = QtWidgets.QGridLayout(self.pageAndroid)
         self.dev = QtWidgets.QComboBox(); self.dev.addItem("Auto")
+        self.btnRefresh = QtWidgets.QPushButton("Refresh ADB / Storage")
         self.storage = QtWidgets.QComboBox(); self.storage.addItem("(choose storage)")
         self.subpath = QtWidgets.QLineEdit("Music")
-        self.endpoint = QtWidgets.QLineEdit()  # final editable endpoint
-        self.endpoint.setPlaceholderText("Local path or adb://...  (will be auto-filled if ADB device/storage selected)")
-        self.btnRefresh = QtWidgets.QPushButton("Refresh ADB / Storage")
-        form = QtWidgets.QGridLayout(self)
         self.lblDevice = QtWidgets.QLabel("ADB device:")
-        form.addWidget(self.lblDevice, 0,0)
-        form.addWidget(self.dev, 0,1)
-        form.addWidget(self.btnRefresh, 0,2)
         self.lblStorage = QtWidgets.QLabel("Storage:")
-        form.addWidget(self.lblStorage, 1,0)
-        form.addWidget(self.storage, 1,1)
         self.lblSubpath = QtWidgets.QLabel("Subpath:")
-        form.addWidget(self.lblSubpath, 1,2)
-        form.addWidget(self.subpath, 1,3)
-        self.lblEndpoint = QtWidgets.QLabel("Endpoint:")
-        form.addWidget(self.lblEndpoint, 2,0)
-        form.addWidget(self.endpoint, 2,1,1,3)
-        # events
+        gridA.addWidget(self.lblDevice, 0,0); gridA.addWidget(self.dev, 0,1); gridA.addWidget(self.btnRefresh, 0,2)
+        gridA.addWidget(self.lblStorage, 1,0); gridA.addWidget(self.storage, 1,1)
+        gridA.addWidget(self.lblSubpath, 1,2); gridA.addWidget(self.subpath, 1,3)
+
+        # --- Local tab ---
+        self.pageLocal = QtWidgets.QWidget()
+        gridL = QtWidgets.QGridLayout(self.pageLocal)
+        self.localPath = QtWidgets.QLineEdit()
+        self.btnBrowse = QtWidgets.QPushButton("Browse…")
+        gridL.addWidget(QtWidgets.QLabel("Path:"), 0,0)
+        gridL.addWidget(self.localPath, 0,1,1,2)
+        gridL.addWidget(self.btnBrowse, 0,3)
+
+        self.tabs.addTab(self.pageAndroid, "Android")
+        self.tabs.addTab(self.pageLocal, "Local")
+
+        # Final endpoint (readable/editable)
+        self.endpoint = QtWidgets.QLineEdit()
+        self.endpoint.setPlaceholderText("Local path or adb://...  (auto-filled by Android/Local tabs)")
+
+        # Layout in group box
+        v = QtWidgets.QVBoxLayout(self)
+        v.addWidget(self.tabs)
+        v.addWidget(QtWidgets.QLabel("Endpoint:"))
+        v.addWidget(self.endpoint)
+
+        # Signals
         self.btnRefresh.clicked.connect(self.refresh_all)
         self.dev.currentIndexChanged.connect(self.refresh_storage)
         self.storage.currentIndexChanged.connect(self.update_endpoint)
         self.subpath.textChanged.connect(lambda *_: self.update_endpoint())
+        self.tabs.currentChanged.connect(lambda *_: self.update_endpoint())
+        self.btnBrowse.clicked.connect(self.pick_local_dir)
+        self.localPath.textChanged.connect(lambda *_: self.update_endpoint())
+
+        # init
+        self.refresh_devices(keep=True)
+        self.refresh_storage()
+
+    # ---- i18n hook ----
+    def apply_strings(self, strings: dict):
+        self.btnRefresh.setText(strings['refresh'])
+        self.lblDevice.setText(strings['adb_device'])
+        self.lblStorage.setText(strings['storage'])
+        self.lblSubpath.setText(strings['subpath'])
+        self.tabs.setTabText(0, strings['tab_android'])
+        self.tabs.setTabText(1, strings['tab_local'])
+        self.btnBrowse.setText(strings['browse'])
+
+    # ---- ADB helpers (reused) ----
     def refresh_devices(self, keep=True):
         cur = self.dev.currentText()
         devs = list_adb_devices()
@@ -150,6 +195,7 @@ class ADBPicker(QtWidgets.QGroupBox):
         if keep and (cur in devs or cur=="Auto"):
             self.dev.setCurrentText(cur)
         self.dev.blockSignals(False)
+
     def refresh_storage(self):
         serial = self.dev.currentText()
         self.storage.blockSignals(True)
@@ -158,9 +204,23 @@ class ADBPicker(QtWidgets.QGroupBox):
             self.storage.addItem(f"{lbl}  (/storage/{tail})", userData=tail)
         self.storage.blockSignals(False)
         self.update_endpoint()
+
     def refresh_all(self):
         self.refresh_devices(); self.refresh_storage()
+
+    def pick_local_dir(self):
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Choose folder", self.localPath.text() or os.path.expanduser("~"))
+        if d:
+            self.localPath.setText(d)
+
     def update_endpoint(self):
+        # Local tab
+        if self.tabs.currentIndex() == 1:
+            path = self.localPath.text().strip()
+            if path:
+                self.endpoint.setText(os.path.abspath(path))
+            return
+        # Android tab
         serial = self.dev.currentText()
         tail = self.storage.currentData()
         sub = self.subpath.text().strip().lstrip("/")
@@ -189,9 +249,9 @@ class MainWindow(QtWidgets.QMainWindow):
         langBar.addStretch(1)
         v.addLayout(langBar)
 
-        # Source & Target pickers
-        self.src = ADBPicker("同步來源 (Source)")
-        self.tgt = ADBPicker("被同步目標 (Target)")
+        # Source & Target pickers (Android or Local)
+        self.src = EndpointPicker("同步來源 (Source)")
+        self.tgt = EndpointPicker("被同步目標 (Target)")
         self.src.endpoint.setText(os.path.expanduser("~/Music"))
         self.tgt.subpath.setText("Music")
 
@@ -277,16 +337,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.src.setTitle(strings['group_source'])
         self.tgt.setTitle(strings['group_target'])
 
-        self.src.lblDevice.setText(strings['adb_device'])
-        self.tgt.lblDevice.setText(strings['adb_device'])
-        self.src.btnRefresh.setText(strings['refresh'])
-        self.tgt.btnRefresh.setText(strings['refresh'])
-        self.src.lblStorage.setText(strings['storage'])
-        self.tgt.lblStorage.setText(strings['storage'])
-        self.src.lblSubpath.setText(strings['subpath'])
-        self.tgt.lblSubpath.setText(strings['subpath'])
-        self.src.lblEndpoint.setText(strings['endpoint'])
-        self.tgt.lblEndpoint.setText(strings['endpoint'])
+        self.src.apply_strings(strings)
+        self.tgt.apply_strings(strings)
 
         self.lblMode.setText(strings['mode'])
         self.lblConflict.setText(strings['conflict'])
